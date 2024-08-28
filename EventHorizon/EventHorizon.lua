@@ -488,14 +488,14 @@ if TWW then
 	local auraBuff = C_UnitAuras.GetBuffDataByIndex(...)
 	if auraBuff then
 	  local name, icon, count, dispelType, duration, expirationTime, source, isStealable, spellId = auraBuff.name, auraBuff.icon, auraBuff.charges, auraBuff.dispelName, auraBuff.duration, auraBuff.expirationTime, auraBuff.sourceUnit, auraBuff.isStealable, auraBuff.spellId
-	  return name, icon, count, dispelType, duration, expirationTime, source, isStealable, _, spellId 
-	end		
+	  return name, icon, count, dispelType, duration, expirationTime, source, isStealable, _, spellId
+	end
   end
   UnitDebuff = function(...)
 	local auraDebuff = C_UnitAuras.GetDebuffDataByIndex(...)
-	if auraDebuff then 
+	if auraDebuff then
 	  local name, icon, count, dispelType, duration, expirationTime, source, isStealable, spellId = auraDebuff.name, auraDebuff.icon, auraDebuff.charges, auraDebuff.dispelName, auraDebuff.duration, auraDebuff.expirationTime, auraDebuff.sourceUnit, auraDebuff.isStealable, auraDebuff.spellId
-	  return name, icon, count, dispelType, duration, expirationTime, source, isStealable, _, spellId 
+	  return name, icon, count, dispelType, duration, expirationTime, source, isStealable, _, spellId
 	end
   end
 end
@@ -1637,8 +1637,13 @@ local SpellFrame_UNIT_AURA = function (self, unitid)
             self:RemoveTicksAfter(start)
             addnew = true
           else
-            -- If it's a buff with no cast time or HoT component, no special handling needed, move along.
-            self.aurasegment.stop = expirationTime
+            if self.pandemic then
+                print("ERROR ???")
+              self.aurasegment.stop = expirationTime-2.0
+            else
+              -- If it's a buff with no cast time or HoT component, no special handling needed, move along.
+              self.aurasegment.stop = expirationTime
+            end
           end
         else
           -- The aura was replaced.
@@ -1957,6 +1962,8 @@ local SpellFrame_UpdateDoT = function (self, addnew, source, now, start, expirat
   local isHasted
   local checkDoT = self.auranamePrimary or name
   local isPrimary = checkDoT == name or nil
+  local oldstop = self.stop
+  local olddur = self.duration
   self.start, self.stop, self.duration = start, expirationTime, duration
 
   local targ = UnitName(self.auraunit)
@@ -1973,6 +1980,11 @@ local SpellFrame_UpdateDoT = function (self, addnew, source, now, start, expirat
             --self.cantcast = self:AddSegment(typeid, 'cantcast', start, expirationTime - pandemic_duration
             --self.cantcast.pandemic_duration = pandemic_duration
 
+      self.aurasegment.lastunit = targ
+    elseif self.pandemic then
+        self.pandemic=(expirationTime-start)*0.3
+      self.aurasegment = self:AddSegment(typeid, 'smalldebuff', start, expirationTime)
+      self.cantcast = self:AddSegment(typeid, 'cantcast', start, expirationTime - self.pandemic)
       self.aurasegment.lastunit = targ
     else
       self.aurasegment = self:AddSegment(typeid, 'default', start, expirationTime)
@@ -1996,7 +2008,25 @@ local SpellFrame_UpdateDoT = function (self, addnew, source, now, start, expirat
     self.targetdebuff.stop = expirationTime
     if self.cantcast then
       self.cantcast.start = start
-      self.cantcast.stop = expirationTime - select(7, GetSpellInfo(self.lastcast or self.spellname))/1000
+      if self.pandemic then
+          local addedTime = self.duration - (oldstop - now)
+          local durpandemic = self.duration * 0.3 / 1.3 -- durpandemic is right when we are refreshing within the pandemic window
+          local remainpandemic = (self.duration - (oldstop - now)) * 0.3 -- Is right when we are refreshing out of the pandemic window
+
+          self.pandemic = math.max(durpandemic, remainpandemic)
+
+          -- self.cantcast.stop = expirationTime - self.pandemic doesn't work,
+          -- if the previous 'cantcast' bar is already completely out of the
+          -- window. Dirty fix (I guess) below adds it again if that's the case
+          local typeid = (source=='player' and self.isType) or (source~='player' and 'debuff')
+          if self.cantcast.stop < now + vars.past then
+              self.cantcast = self:AddSegment(typeid, 'cantcast', start, expirationTime - self.pandemic)
+          else
+              self.cantcast.stop = expirationTime - self.pandemic
+          end
+      else
+          self.cantcast.stop = expirationTime - select(7, GetSpellInfo(self.lastcast or self.spellname))/1000
+      end
     end
     if self.latesttick then
       addticks = self.latesttick
@@ -2278,7 +2308,7 @@ local SpellFrame_SPELL_UPDATE_COOLDOWN = function (self)
       if not(self.coolingdown) then  -- No CD bar exists.
         self.coolingdown = self:AddSegment('cooldown', self.smallCooldown and 'smallCooldown' or 'cooldown', start, ready)
       elseif self.coolingdown.stop and self.coolingdown.stop ~= ready then  -- cd exists but has changed
-        -- nponoBegHuk: if you want a good story about changing past, watch Steins;Gate. 
+        -- nponoBegHuk: if you want a good story about changing past, watch Steins;Gate.
         -- self.coolingdown.start = start
         self.coolingdown.stop = ready
       end
@@ -2888,6 +2918,7 @@ function ns:newSpell(config) -- New class config to old class config
   n.rechargeMaxDisplayCount = c.rechargeMaxDisplayCount
   n.timerAfterCast = c.timerAfterCast
   n.refreshable = c.refreshable == false and false or true
+  n.pandemic = c.pandemic
 
   if type(c.debuff) == "table" then
     if type(c.debuff[1]) == "table" then
@@ -2900,10 +2931,8 @@ function ns:newSpell(config) -- New class config to old class config
       n.debuff = c.debuff[1]
       n.dot = c.debuff[2]
     end
-    n.pandemic = c.pandemic
   elseif c.debuff then
     n.debuff = c.debuff
-    n.pandemic = c.pandemic
   end
 
   if type(c.playerbuff) == "table" and not n.debuff then
@@ -3176,6 +3205,9 @@ local function SetSpellAttributes(spellframe,config)
         spellframe.castsuccess = {}
       end
     end
+    if config.pandemic then
+        spellframe.pandemic = config.pandemic
+    end
   elseif config.playerbuff then
     spellframe.isType = 'playerbuff'
     spellframe.AuraFunction = UnitBuff
@@ -3313,17 +3345,6 @@ function ns:CreateSpellBar(config)
 
   if config.slotID then
     spellframe:PLAYER_EQUIPMENT_CHANGED(config.slotID)  -- Initialize trinkets and such if needed.
-  end
-
-  -- add a pandemic indicator, if requested
-  -- note that I have absolutely NO IDEA on how to make sure that the spell is a DoT or what its duration is, because I cannot find any useful API function which returns the data used to create the tooltip
-  if config.pandemic then
-    spellframe.pandemicTex = spellframe:CreateTexture(nil,"OVERLAY")
-    local position = (config.pandemic-vars.past)*vars.scale*vars.barwidth
-    spellframe.pandemicTex:SetPoint('TOPLEFT', spellframe, 'TOPLEFT', position, 0)
-    spellframe.pandemicTex:SetColorTexture(unpack({0,1,0,0.5}))
-    spellframe.pandemicTex:SetWidth(vars.onepixelwide)
-    spellframe.pandemicTex:SetPoint('BOTTOM', spellframe, "BOTTOM")
   end
 
   return spellframe
