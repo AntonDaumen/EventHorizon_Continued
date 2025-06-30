@@ -1965,6 +1965,7 @@ local SpellFrame_UpdateDoT = function (self, addnew, source, now, start, expirat
   local isHasted
   local checkDoT = self.auranamePrimary or name
   local isPrimary = checkDoT == name or nil
+  local oldstart = self.start
   local oldstop = self.stop
   local olddur = self.duration
   self.start, self.stop, self.duration = start, expirationTime, duration
@@ -1985,7 +1986,14 @@ local SpellFrame_UpdateDoT = function (self, addnew, source, now, start, expirat
 
       self.aurasegment.lastunit = targ
     elseif self.pandemic then
+      if oldstop then -- This is a replace
+        local addedTime = self.duration - (oldstop - now)
+        local durpandemic = self.duration * 0.3 / 1.3 -- durpandemic is right when we are refreshing before the pandemic window
+        local remainpandemic = (self.duration - (olddur - (now - oldstart))) * 0.3 -- Is right when we are refreshing in the pandemic window
+        self.pandemic = math.max(durpandemic, remainpandemic)
+      else
         self.pandemic=(expirationTime-start)*0.3
+      end
       self.aurasegment = self:AddSegment(typeid, 'smalldebuff', start, expirationTime)
       self.cantcast = self:AddSegment(typeid, 'cantcast', start, expirationTime - self.pandemic)
       self.aurasegment.lastunit = targ
@@ -2013,8 +2021,8 @@ local SpellFrame_UpdateDoT = function (self, addnew, source, now, start, expirat
       self.cantcast.start = start
       if self.pandemic then
           local addedTime = self.duration - (oldstop - now)
-          local durpandemic = self.duration * 0.3 / 1.3 -- durpandemic is right when we are refreshing within the pandemic window
-          local remainpandemic = (self.duration - (oldstop - now)) * 0.3 -- Is right when we are refreshing out of the pandemic window
+          local durpandemic = self.duration * 0.3 / 1.3 -- durpandemic is right when we are refreshing before the pandemic window
+          local remainpandemic = (self.duration - (olddur - (now - oldstart))) * 0.3 -- Is right when we are refreshing in the pandemic window
 
           self.pandemic = math.max(durpandemic, remainpandemic)
 
