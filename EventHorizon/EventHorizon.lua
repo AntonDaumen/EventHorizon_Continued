@@ -1928,6 +1928,9 @@ local SpellFrame_UNIT_AURA_refreshable = function (self, unitid)
       if expirationTime~=self.aurasegment.stop and not refresh then
         -- The current debuff was replaced.
         self.aurasegment.stop = start-0.2
+        if self.cantcast then
+          self.cantcast.stop = start-0.2
+        end
         self:RemoveTicksAfter(start)
 
         --debug('replaced')
