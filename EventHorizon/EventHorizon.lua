@@ -632,6 +632,7 @@ ns.frames = {
   active = {},  -- refs to barframes currently collecting information (matches talent spec)
   shown = {},    -- refs to barframes currently visible to the player (matches stance)
   mouseover = {},  -- refs to barframes requiring mouseover target information
+  cpvariable = {},  -- refs to barframes requiring dynamic combo point information
 }
 ns.defaultconfig = {
   showTrinketBars = {
@@ -931,6 +932,8 @@ ns.vars = {        -- storage for widely used vars/math/etc - format = ns.vars[v
   onepixelwide = 1,
   visibleFrame = true,
   numframes = 0,
+  cp_counter = 0,
+  pandemic_cp_last_cast = nil,
   buff = {},
   debuff = {},
 }
@@ -1039,6 +1042,7 @@ local mainframeEvents = {
   ['UNIT_AURA'] = true,
   ['PLAYER_TOTEM_UPDATE'] = true,
   ['PLAYER_ENTERING_WORLD'] = true,
+  ['UNIT_POWER_UPDATE'] = true,
 }
 
 local reloadEvents = {
@@ -1074,6 +1078,7 @@ local EventHandler = function (self, event, ...)
       -- Even weirder is we don't get any sort of event ID to query with, we just have to call the method? Feels weird man
       return f(self, CombatLogGetCurrentEventInfo())
     end
+
     f(self,...)
     ns:ModuleEvent(event,...)
   end
@@ -1136,6 +1141,66 @@ local mainframe_PLAYER_TOTEM_UPDATE = function( self, slot )
             C_Timer.After( 0.1, function () spellframe:PLAYER_TOTEM_UPDATE( slot ) end )
         end
     end
+end
+
+local mainframe_UNIT_POWER_UPDATE = function( self, unit, powerType )
+  if unit ~= "player" then
+    return false
+  end
+
+  if powerType == "COMBO_POINTS" then
+    vars.cp_counter = GetComboPoints("player", "target")
+    for _, frame in ipairs(ns.frames.cpvariable) do
+      frame:UpdatePandemic()
+    end
+  end
+
+end
+
+local get_CP_count = function( self, unit, powerType )
+  return vars.cp_counter
+end
+
+local SpellFrame_UpdatePandemic = function (self)
+  if not self.isActive then return end
+
+  if self.aurasegment then
+    -- Get Combo point value and compute pandemic time
+    local comboPoints = get_CP_count()
+    if comboPoints > 0 then
+      if type(self.CPvariabledur) == "table" and type(self.CPvariabledur[1]) == "table" then
+        -- Debuff duration depends on the spell source (i.e. Rip vs Primal Wrath)
+        for i, id in ipairs(self.CPspellsource) do
+          if vars.pandemic_cp_last_cast == id then
+            local basedur = self.CPvariabledur[i][1]
+            local CP_dur = self.CPvariabledur[i][2]
+            self.pandemicdur = (basedur + (CP_dur * comboPoints))*0.3
+          end
+        end
+      else
+        local basedur = self.CPvariabledur[1]
+        local CP_dur = self.CPvariabledur[2]
+        self.pandemicdur = (basedur + (CP_dur * comboPoints))*0.3
+      end
+    else
+      self.pandemicdur = 0
+    end
+
+    -- Compute new end for 'cantcast' bar
+    local newstop = self.aurasegment.stop - self.pandemicdur
+    if newstop < self.aurasegment.start then -- doesn't hurt to make sure
+      newstop = self.aurasegment.start + 0.2
+    end
+
+    local now = GetTime()
+    -- Update 'cantcast' or create a new one if it already ended
+    if self.cantcast and self.cantcast.stop > (now + vars.past) then
+      self.cantcast.stop = newstop
+    else
+      local typeid = (self.source=='player' and self.isType) or (self.source~='player' and 'debuff')
+      self.cantcast = self:AddSegment(typeid, 'cantcast', self.aurasegment.start, newstop)
+    end
+  end
 end
 
 local mainframe_UNIT_AURA = function (self,unit)
@@ -1791,6 +1856,8 @@ local mainframe_CLEU_OtherInterestingSpell = function (self, time, event, hideCa
           end
         end
       end
+    elseif event == 'SPELL_CAST_SUCCESS' and id.pandmicCPSource then
+      vars.pandemic_cp_last_cast = spellid
     end
   end
 end
@@ -1969,6 +2036,7 @@ local SpellFrame_UpdateDoT = function (self, addnew, source, now, start, expirat
   local oldstop = self.stop
   local olddur = self.duration
   self.start, self.stop, self.duration = start, expirationTime, duration
+  self.source = source -- Used in UpdatePandemic
 
   local targ = UnitName(self.auraunit)
   if addnew then
@@ -1986,16 +2054,22 @@ local SpellFrame_UpdateDoT = function (self, addnew, source, now, start, expirat
 
       self.aurasegment.lastunit = targ
     elseif self.pandemic then
-      if oldstop then -- This is a replace
-        local addedTime = self.duration - (oldstop - now)
-        local durpandemic = self.duration * 0.3 / 1.3 -- durpandemic is right when we are refreshing before the pandemic window
-        local remainpandemic = (self.duration - (olddur - (now - oldstart))) * 0.3 -- Is right when we are refreshing in the pandemic window
-        self.pandemic = math.max(durpandemic, remainpandemic)
-      else
-        self.pandemic=(expirationTime-start)*0.3
+      if not self.pandemicdur then -- This is the first application
+        if self.CPvariabledur then
+          local comboPoints = get_CP_count()
+          if comboPoints > 0 then
+            local basedur = self.CPvariabledur[1]
+            local CP_dur = self.CPvariabledur[2]
+            self.pandemicdur = (basedur + (CP_dur * comboPoints))*0.3
+          else
+            self.pandemicdur = 0
+          end
+        else
+          self.pandemicdur=(expirationTime-start)*0.3
+        end
       end
       self.aurasegment = self:AddSegment(typeid, 'smalldebuff', start, expirationTime)
-      self.cantcast = self:AddSegment(typeid, 'cantcast', start, expirationTime - self.pandemic)
+      self.cantcast = self:AddSegment(typeid, 'cantcast', start, expirationTime - self.pandemicdur)
       self.aurasegment.lastunit = targ
     else
       self.aurasegment = self:AddSegment(typeid, 'default', start, expirationTime)
@@ -2020,20 +2094,18 @@ local SpellFrame_UpdateDoT = function (self, addnew, source, now, start, expirat
     if self.cantcast then
       self.cantcast.start = start
       if self.pandemic then
-          local addedTime = self.duration - (oldstop - now)
-          local durpandemic = self.duration * 0.3 / 1.3 -- durpandemic is right when we are refreshing before the pandemic window
-          local remainpandemic = (self.duration - (olddur - (now - oldstart))) * 0.3 -- Is right when we are refreshing in the pandemic window
-
-          self.pandemic = math.max(durpandemic, remainpandemic)
+        if not self.pandemicdur then -- This is the first application => Should never happen
+          self.pandemicdur=(expirationTime-start)*0.3
+        end
 
           -- self.cantcast.stop = expirationTime - self.pandemic doesn't work,
           -- if the previous 'cantcast' bar is already completely out of the
           -- window. Dirty fix (I guess) below adds it again if that's the case
           local typeid = (source=='player' and self.isType) or (source~='player' and 'debuff')
           if self.cantcast.stop < now + vars.past then
-              self.cantcast = self:AddSegment(typeid, 'cantcast', start, expirationTime - self.pandemic)
+              self.cantcast = self:AddSegment(typeid, 'cantcast', start, expirationTime - self.pandemicdur)
           else
-              self.cantcast.stop = expirationTime - self.pandemic
+              self.cantcast.stop = expirationTime - self.pandemicdur
           end
       else
           self.cantcast.stop = expirationTime - select(4, GetSpellInfo(self.lastcast or self.spellname))/1000
@@ -2617,6 +2689,7 @@ function ns:CheckRequirements()
   if not ns.isReady then return end
 
   table.wipe(self.frames.active)
+  table.wipe(self.frames.cpvariable)
   table.wipe(self.frames.mouseover)
   --print('checkrequirements')
   --print(GetTime())
@@ -2728,6 +2801,10 @@ function ns:CheckRequirements()
 
       if spellframe.usemouseover then
         table.insert(self.frames.mouseover, spellframe)
+      end
+
+      if spellframe.pandemic and spellframe.CPvariabledur then
+        table.insert(self.frames.cpvariable, spellframe)
       end
 
       if type(config.cooldown) == "table" then -- We need to update the spellID again
@@ -2862,6 +2939,7 @@ end
 -- Dispatch the CLEU.
 local mainframe_COMBAT_LOG_EVENT_UNFILTERED = function (...)
   local self,time, event, hideCaster, srcguid,srcname,srcflags,srcraidflags,destguid,destname,destflags, destraidflags,spellid,spellname = ...
+
   if srcguid~=vars.playerguid or event:sub(1,5)~='SPELL' then return end
   local spellframe = self.framebyspell[spellname]
   if ns.otherIDs[spellname] then
@@ -2931,6 +3009,8 @@ function ns:newSpell(config) -- New class config to old class config
   n.timerAfterCast = c.timerAfterCast
   n.refreshable = c.refreshable == false and false or true
   n.pandemic = c.pandemic
+  n.CPvariabledur = c.CPvariabledur
+  n.CPspellsource = c.CPspellsource
 
   if type(c.debuff) == "table" then
     if type(c.debuff[1]) == "table" then
@@ -3064,11 +3144,11 @@ local function SetSpellAttributes(spellframe,config)
     local sn = GetSpellInfo(config.channeled)
     if type(timerAfterCast[1]) == "number" then
       local sn = GetSpellInfo(timerAfterCast[1])
-      otherids[sn] = {isTimer = true}
+      otherids[sn] = {isTimer = true, pandmicCPSource = false}
     elseif type(timerAfterCast[1]) == "table" then
       for _, value in pairs(timerAfterCast[1]) do
         local sn = GetSpellInfo(value)
-        otherids[sn] = {isTimer = true}
+        otherids[sn] = {isTimer = true, pandmicCPSource = false}
       end
     end
   end
@@ -3219,6 +3299,16 @@ local function SetSpellAttributes(spellframe,config)
     end
     if config.pandemic then
         spellframe.pandemic = config.pandemic
+        spellframe.pandemicdur = nil
+        spellframe.CPspellsource = config.CPspellsource
+        spellframe.CPvariabledur = config.CPvariabledur
+        if spellframe.CPspellsource then
+          interestingCLEU.SPELL_CAST_SUCCESS=true
+          for _, id in ipairs(spellframe.CPspellsource) do -- Multiple spells
+            local sn = GetSpellInfo(id)
+            otherids[sn] = {isTimer = false, pandmicCPSource = true}
+          end
+        end
     end
   elseif config.playerbuff then
     spellframe.isType = 'playerbuff'
@@ -4245,6 +4335,7 @@ mainframe.PLAYER_TARGET_CHANGED = mainframe_PLAYER_TARGET_CHANGED
 mainframe.UNIT_AURA = mainframe_UNIT_AURA
 mainframe.PLAYER_TOTEM_UPDATE = mainframe_PLAYER_TOTEM_UPDATE
 mainframe.PLAYER_ENTERING_WORLD = mainframe_PLAYER_ENTERING_WORLD
+mainframe.UNIT_POWER_UPDATE = mainframe_UNIT_POWER_UPDATE
 
 SpellFrame.NotInteresting = SpellFrame_NotInteresting
 SpellFrame.AddSegment = SpellFrame_AddSegment
@@ -4260,6 +4351,7 @@ SpellFrame.Activate = SpellFrame_Activate
 SpellFrame.Deactivate = SpellFrame_Deactivate
 SpellFrame.FindItemInfo = SpellFrame_FindItemInfo
 SpellFrame.SetStacks = SpellFrame_SetStacks
+SpellFrame.UpdatePandemic = SpellFrame_UpdatePandemic
 
 SpellFrame.UNIT_AURA = SpellFrame_UNIT_AURA
 SpellFrame.UNIT_AURA_refreshable = SpellFrame_UNIT_AURA_refreshable
