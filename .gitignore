@@ -53,3 +53,6 @@ luac.out
 myconfig.lua
 EventHorizon_Configs/
 EventHorizon_Configs/**
+
+# Vim files
+*.swp
