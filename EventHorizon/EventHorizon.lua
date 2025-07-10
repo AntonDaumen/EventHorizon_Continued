@@ -2084,7 +2084,9 @@ local SpellFrame_UpdateDoT = function (self, addnew, source, now, start, expirat
       self.targetdebuff = {start=start, stop=expirationTime}
       self.debuffs[guid] = self.targetdebuff
     end
-    self.recenttick = now
+    if not self.recenttick then
+      self.recenttick = now
+    end
   elseif refresh then
     -- debug('refresh', start, expirationTime)
     -- Note: refresh requires afflicted and self.targetdebuff. Also, afflicted and not self.debuff implies addnew.
